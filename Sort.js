@@ -17,10 +17,11 @@ const TOKEN_PATH = TOKEN_DIR + '-youtube-playlist-sort.json';
 //get video info
 const ytdl = require('youtube-dl')
 //json of artist names for better results
-const data = require('./data.json')
+let data = require('./data.json');
 
 //important variables
 const listSongs = [];
+const playlistList = []
 let playlistId = '';
 
 // Load client secrets from a local file.
@@ -46,7 +47,6 @@ function authorize(credentials, callback) {
             getNewToken(oauth2Client, callback);
         } else {
             oauth2Client.credentials = JSON.parse(token);
-            console.log(oauth2Client)
             callback(oauth2Client);
         }
     });
@@ -106,17 +106,39 @@ function getPlaylists(auth, next) {
         pageToken: token,
         maxResults: 50
     }).then(function (response) {
-            //search the list of playlists for the match
-            response.data.items.forEach(async (item) => {
-                if (item.snippet.title === 'Music') {
-                    playlistId = item.id
-                    //after getting the playlistID call getSongs to get all videos from the playlist
-                    await getSongs(auth, item.contentDetails.itemCount);
-                }
+            //save the playlist name, id and size and print the name
+            response.data.items.forEach(item => {
+                console.log(item.snippet.title)
+                playlistList.push({
+                    name: item.snippet.title.toLowerCase(),
+                    id: item.id,
+                    size: item.contentDetails.itemCount
+                })
             })
+
             //if there is nextPageToken call the method recursively with the new page token
             if (response.data.nextPageToken) {
                 getPlaylists(auth, response.data.nextPageToken)
+            } else {
+                //get input and search the list of playlists for the match
+                const rl = readline.createInterface({
+                    input: process.stdin,
+                    output: process.stdout
+                });
+                rl.question('Enter the playlist name: ', function (playlistName) {
+                    rl.close();
+                    playlistList.forEach(async (item) => {
+                        if (item.name === playlistName.toLowerCase()) {
+                            playlistId = item.id
+                            //after getting the playlistID call getSongs to get all videos from the playlist
+                            console.log('Getting songs')
+                            await getSongs(auth, item.size);
+                        }
+                    })
+                    if (!playlistId) {
+                        console.log('Playlist name not found')
+                    }
+                });
             }
         },
         function (err) {
@@ -162,6 +184,7 @@ const getSongs = (auth, size, next) => new Promise((resolve, reject) => {
 
 //get the info of all videos in listSongs using youtube-dl
 function getInfo(auth) {
+    console.log('Getting info of the videos (this may take a while)')
     const urlList = []
     for (let value of listSongs) {
         urlList.push('https://www.youtube.com/watch?v=' + value.resourceId.videoId)
@@ -169,50 +192,40 @@ function getInfo(auth) {
 
     ytdl.getInfo(urlList, undefined, function (err, info) {
         if (err) throw err
+        console.log('Updating artist and track...')
+        updateArtist(info)
 
-        //the youtube-dl method returns a list of video info
-        for (let i = 0; i < listSongs.length; i++) {
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout
+        });
+        //write in another file to be able to change the data
+        fs.writeFileSync('./changeHere.json', JSON.stringify(data));
+        rl.question('\n\nChange the artist name in changeHere.json if it is needed \n(Example: "ArtistVevo": "ArtistVevo" -> "ArtistVevo": "Artist")' +
+            '\n\nTo add a new artist: add the name to the list(do not forget the comma) and add it with the others below' +
+            '\n(Example "list": ["ArtistVevo"] -> "list": ["ArtistVevo", "New Artist"]' +
+            '\nAND below the list change "ArtistVevo": "Artist" -> "ArtistVevo": "Artist", "New Artist": "New Artist")' +
+            '\n\nPress enter to sort the playlist', function () {
 
-            //search for the artist name in the title using the json file
-            for (let j = 0; j < data.list.length; j++) {
-                //if the artist is stored in the json save the name in the object
-                if (listSongs[i].title.includes(data.list[j])) {
-                    listSongs[i].track = info[i].track === null ? listSongs[i].title : info[i].track
-                    listSongs[i].artist = data[data.list[j]]
-                    break
-                }
-            }
-            //check if the artist was found in the json
-            if (!listSongs[i].artist) {
-                //if the youtube-dl couldn't get the artist and track of the videos update the artist to null and the track to the title of the video
-                if (info[i].track === null || info[i].artist === null) {
-                    listSongs[i].track = listSongs[i].title
-                    listSongs[i].artist = info[i].artist
-                    console.log(listSongs[i].title)
-                } else {
-                    //check if artist is in json to better results
-                    listSongs[i].track = info[i].track
-                    if (data[info[i].artist]) {
-                        listSongs[i].artist = data[info[i].artist]
-                    } else {
-                        listSongs[i].artist = info[i].artist
-                    }
-                    //if the artist is not in the json update the file
-                    if (!data.list.includes(info[i].artist)) {
-                        data.list.push(info[i].artist)
-                        data[info[i].artist] = info[i].artist
-                        fs.writeFileSync('./data.json', JSON.stringify(data));
-                    }
-                }
-            }
-        }
-        sortPlaylistItems()
-        attPos(auth, 0)
+            rl.close();
+            //get the new json after the changes
+            data = require('./changeHere.json')
+            console.log('Getting new information...')
+            setTimeout(function () {
+                fs.writeFileSync('./data.json', JSON.stringify(data))
+                //update with the new information
+                updateArtist(info)
+                sortPlaylistItems()
+                console.log('Updating position...')
+                //attPos(auth, 0)
+            }, 3000);
+        });
     })
 }
 
 //sort listSongs
 function sortPlaylistItems() {
+    console.log('Sorting songs...')
     //it will sort by artists, if it is the same artist then it will be sorted by the track name(that can be the video title)
     listSongs.sort(function (a, b) {
         return a.artist === b.artist ? ('' + a.track).localeCompare(b.track) : ('' + a.artist).localeCompare(b.artist);
@@ -250,4 +263,43 @@ function attPos(auth, index) {
         function (err) {
             console.error("Execute error", err);
         });
+}
+
+//get artist and track name using youtube-dl
+function updateArtist(info) {
+    //the youtube-dl method returns a list of video info
+    for (let i = 0; i < listSongs.length; i++) {
+        //search for the artist name in the title using the json file
+        for (let j = 0; j < data.list.length; j++) {
+            //if the artist is stored in the json save the name in the object
+            if ((listSongs[i].title.toLowerCase()).includes(data.list[j].toLowerCase())) {
+                listSongs[i].track = info[i].track === null ? listSongs[i].title : info[i].track
+                listSongs[i].artist = data[data.list[j]]
+                break
+            }
+        }
+        //check if the artist was found in the json
+        if (!listSongs[i].artist) {
+            //if the youtube-dl couldn't get the artist and track of the videos update the artist to null and the track to the title of the video
+            if (info[i].track === null || info[i].artist === null) {
+                listSongs[i].track = listSongs[i].title
+                listSongs[i].artist = info[i].artist
+                console.log('\nArtist not found in data.json and song info not found by youtube-dl:\n' + listSongs[i].title)
+            } else {
+                //check if artist is in json to better results
+                listSongs[i].track = info[i].track
+                if (data[info[i].artist]) {
+                    listSongs[i].artist = data[info[i].artist]
+                } else {
+                    listSongs[i].artist = info[i].artist
+                }
+                //if the artist is not in the json update the file
+                if (!data.list.includes(info[i].artist)) {
+                    data.list.push(info[i].artist)
+                    data[info[i].artist] = info[i].artist
+                    fs.writeFileSync('./data.json', JSON.stringify(data));
+                }
+            }
+        }
+    }
 }
