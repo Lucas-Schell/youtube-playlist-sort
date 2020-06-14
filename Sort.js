@@ -217,7 +217,7 @@ function getInfo(auth) {
                 updateArtist(info)
                 sortPlaylistItems()
                 console.log('Updating position...')
-                //attPos(auth, 0)
+                attPos(auth, 0)
             }, 3000);
         });
     })
